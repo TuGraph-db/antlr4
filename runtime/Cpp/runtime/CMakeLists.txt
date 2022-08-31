@@ -3,11 +3,10 @@ include(${CMAKE_ROOT}/Modules/ExternalProject.cmake)
 
 set(THIRDPARTY_DIR ${CMAKE_BINARY_DIR}/runtime/thirdparty)
 set(UTFCPP_DIR ${THIRDPARTY_DIR}/utfcpp)
+set(UTFCPP_SRC_DIR ${CMAKE_CURRENT_LIST_DIR}/utfcpp)
 ExternalProject_Add(
   utfcpp
-  GIT_REPOSITORY        "git://github.com/nemtrif/utfcpp"
-  GIT_TAG               "v3.1.1"
-  SOURCE_DIR            ${UTFCPP_DIR}
+  SOURCE_DIR            ${UTFCPP_SRC_DIR}
   UPDATE_DISCONNECTED   1
   CMAKE_ARGS            -DCMAKE_INSTALL_PREFIX=${UTFCPP_DIR}/install -Dgtest_force_shared_crt=ON
   TEST_AFTER_INSTALL    1
@@ -131,9 +130,9 @@ install(DIRECTORY "${PROJECT_SOURCE_DIR}/runtime/src/"
         FILES_MATCHING PATTERN "*.h"
         )
 
-install(FILES "${UTFCPP_DIR}/source/utf8.h"
+install(FILES "${UTFCPP_SRC_DIR}/source/utf8.h"
         DESTINATION "include/antlr4-runtime")
-install(DIRECTORY "${UTFCPP_DIR}/source/utf8"
+install(DIRECTORY "${UTFCPP_SRC_DIR}/source/utf8"
         DESTINATION "include/antlr4-runtime"
         COMPONENT dev
         FILES_MATCHING PATTERN "*.h"
