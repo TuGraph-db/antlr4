@@ -1,4 +1,4 @@
-// Copyright (c) 2012-2017 The ANTLR Project. All rights reserved.
+// Copyright (c) 2012-2022 The ANTLR Project. All rights reserved.
 // Use of this file is governed by the BSD 3-clause license that
 // can be found in the LICENSE.txt file in the project root.
 
@@ -18,12 +18,12 @@ import (
 //
 
 type SemanticContext interface {
-	comparable
+	Equals(other Collectable[SemanticContext]) bool
+	Hash() int
 
 	evaluate(parser Recognizer, outerContext RuleContext) bool
 	evalPrecedence(parser Recognizer, outerContext RuleContext) SemanticContext
 
-	hash() int
 	String() string
 }
 
@@ -78,7 +78,7 @@ func NewPredicate(ruleIndex, predIndex int, isCtxDependent bool) *Predicate {
 //The default {@link SemanticContext}, which is semantically equivalent to
 //a predicate of the form {@code {true}?}.
 
-var SemanticContextNone SemanticContext = NewPredicate(-1, -1, false)
+var SemanticContextNone = NewPredicate(-1, -1, false)
 
 func (p *Predicate) evalPrecedence(parser Recognizer, outerContext RuleContext) SemanticContext {
 	return p
@@ -95,7 +95,7 @@ func (p *Predicate) evaluate(parser Recognizer, outerContext RuleContext) bool {
 	return parser.Sempred(localctx, p.ruleIndex, p.predIndex)
 }
 
-func (p *Predicate) equals(other interface{}) bool {
+func (p *Predicate) Equals(other Collectable[SemanticContext]) bool {
 	if p == other {
 		return true
 	} else if _, ok := other.(*Predicate); !ok {
@@ -107,8 +107,16 @@ func (p *Predicate) equals(other interface{}) bool {
 	}
 }
 
-func (p *Predicate) hash() int {
-	return p.ruleIndex*43 + p.predIndex*47
+func (p *Predicate) Hash() int {
+	h := murmurInit(0)
+	h = murmurUpdate(h, p.ruleIndex)
+	h = murmurUpdate(h, p.predIndex)
+	if p.isCtxDependent {
+		h = murmurUpdate(h, 1)
+	} else {
+		h = murmurUpdate(h, 0)
+	}
+	return murmurFinish(h, 3)
 }
 
 func (p *Predicate) String() string {
@@ -143,32 +151,40 @@ func (p *PrecedencePredicate) compareTo(other *PrecedencePredicate) int {
 	return p.precedence - other.precedence
 }
 
-func (p *PrecedencePredicate) equals(other interface{}) bool {
-	if p == other {
-		return true
-	} else if _, ok := other.(*PrecedencePredicate); !ok {
+func (p *PrecedencePredicate) Equals(other Collectable[SemanticContext]) bool {
+
+	var op *PrecedencePredicate
+	var ok bool
+	if op, ok = other.(*PrecedencePredicate); !ok {
 		return false
-	} else {
-		return p.precedence == other.(*PrecedencePredicate).precedence
 	}
+
+	if p == op {
+		return true
+	}
+
+	return p.precedence == other.(*PrecedencePredicate).precedence
 }
 
-func (p *PrecedencePredicate) hash() int {
-	return p.precedence * 51
+func (p *PrecedencePredicate) Hash() int {
+	h := uint32(1)
+	h = 31*h + uint32(p.precedence)
+	return int(h)
 }
 
 func (p *PrecedencePredicate) String() string {
 	return "{" + strconv.Itoa(p.precedence) + ">=prec}?"
 }
 
-func PrecedencePredicatefilterPrecedencePredicates(set *Set) []*PrecedencePredicate {
+func PrecedencePredicatefilterPrecedencePredicates(set *JStore[SemanticContext, Comparator[SemanticContext]]) []*PrecedencePredicate {
 	result := make([]*PrecedencePredicate, 0)
 
-	for _, v := range set.values() {
+	set.Each(func(v SemanticContext) bool {
 		if c2, ok := v.(*PrecedencePredicate); ok {
 			result = append(result, c2)
 		}
-	}
+		return true
+	})
 
 	return result
 }
@@ -182,21 +198,21 @@ type AND struct {
 
 func NewAND(a, b SemanticContext) *AND {
 
-	operands := NewSet(nil, nil)
+	operands := NewJStore[SemanticContext, Comparator[SemanticContext]](&ObjEqComparator[SemanticContext]{})
 	if aa, ok := a.(*AND); ok {
 		for _, o := range aa.opnds {
-			operands.add(o)
+			operands.Put(o)
 		}
 	} else {
-		operands.add(a)
+		operands.Put(a)
 	}
 
 	if ba, ok := b.(*AND); ok {
 		for _, o := range ba.opnds {
-			operands.add(o)
+			operands.Put(o)
 		}
 	} else {
-		operands.add(b)
+		operands.Put(b)
 	}
 	precedencePredicates := PrecedencePredicatefilterPrecedencePredicates(operands)
 	if len(precedencePredicates) > 0 {
@@ -209,10 +225,10 @@ func NewAND(a, b SemanticContext) *AND {
 			}
 		}
 
-		operands.add(reduced)
+		operands.Put(reduced)
 	}
 
-	vs := operands.values()
+	vs := operands.Values()
 	opnds := make([]SemanticContext, len(vs))
 	for i, v := range vs {
 		opnds[i] = v.(SemanticContext)
@@ -224,14 +240,15 @@ func NewAND(a, b SemanticContext) *AND {
 	return and
 }
 
-func (a *AND) equals(other interface{}) bool {
+func (a *AND) Equals(other Collectable[SemanticContext]) bool {
 	if a == other {
 		return true
-	} else if _, ok := other.(*AND); !ok {
+	}
+	if _, ok := other.(*AND); !ok {
 		return false
 	} else {
 		for i, v := range other.(*AND).opnds {
-			if !a.opnds[i].equals(v) {
+			if !a.opnds[i].Equals(v) {
 				return false
 			}
 		}
@@ -239,13 +256,11 @@ func (a *AND) equals(other interface{}) bool {
 	}
 }
 
-//
 // {@inheritDoc}
 //
 // <p>
 // The evaluation of predicates by a context is short-circuiting, but
 // unordered.</p>
-//
 func (a *AND) evaluate(parser Recognizer, outerContext RuleContext) bool {
 	for i := 0; i < len(a.opnds); i++ {
 		if !a.opnds[i].evaluate(parser, outerContext) {
@@ -293,18 +308,18 @@ func (a *AND) evalPrecedence(parser Recognizer, outerContext RuleContext) Semant
 	return result
 }
 
-func (a *AND) hash() int {
+func (a *AND) Hash() int {
 	h := murmurInit(37) // Init with a value different from OR
 	for _, op := range a.opnds {
-		h = murmurUpdate(h, op.hash())
+		h = murmurUpdate(h, op.Hash())
 	}
 	return murmurFinish(h, len(a.opnds))
 }
 
-func (a *OR) hash() int {
+func (a *OR) Hash() int {
 	h := murmurInit(41) // Init with a value different from AND
 	for _, op := range a.opnds {
-		h = murmurUpdate(h, op.hash())
+		h = murmurUpdate(h, op.Hash())
 	}
 	return murmurFinish(h, len(a.opnds))
 }
@@ -334,21 +349,21 @@ type OR struct {
 
 func NewOR(a, b SemanticContext) *OR {
 
-	operands := NewSet(nil, nil)
+	operands := NewJStore[SemanticContext, Comparator[SemanticContext]](&ObjEqComparator[SemanticContext]{})
 	if aa, ok := a.(*OR); ok {
 		for _, o := range aa.opnds {
-			operands.add(o)
+			operands.Put(o)
 		}
 	} else {
-		operands.add(a)
+		operands.Put(a)
 	}
 
 	if ba, ok := b.(*OR); ok {
 		for _, o := range ba.opnds {
-			operands.add(o)
+			operands.Put(o)
 		}
 	} else {
-		operands.add(b)
+		operands.Put(b)
 	}
 	precedencePredicates := PrecedencePredicatefilterPrecedencePredicates(operands)
 	if len(precedencePredicates) > 0 {
@@ -361,10 +376,10 @@ func NewOR(a, b SemanticContext) *OR {
 			}
 		}
 
-		operands.add(reduced)
+		operands.Put(reduced)
 	}
 
-	vs := operands.values()
+	vs := operands.Values()
 
 	opnds := make([]SemanticContext, len(vs))
 	for i, v := range vs {
@@ -377,14 +392,14 @@ func NewOR(a, b SemanticContext) *OR {
 	return o
 }
 
-func (o *OR) equals(other interface{}) bool {
+func (o *OR) Equals(other Collectable[SemanticContext]) bool {
 	if o == other {
 		return true
 	} else if _, ok := other.(*OR); !ok {
 		return false
 	} else {
 		for i, v := range other.(*OR).opnds {
-			if !o.opnds[i].equals(v) {
+			if !o.opnds[i].Equals(v) {
 				return false
 			}
 		}
@@ -395,7 +410,6 @@ func (o *OR) equals(other interface{}) bool {
 // <p>
 // The evaluation of predicates by o context is short-circuiting, but
 // unordered.</p>
-//
 func (o *OR) evaluate(parser Recognizer, outerContext RuleContext) bool {
 	for i := 0; i < len(o.opnds); i++ {
 		if o.opnds[i].evaluate(parser, outerContext) {

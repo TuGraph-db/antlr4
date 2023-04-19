@@ -4,6 +4,7 @@
  * can be found in the LICENSE.txt file in the project root.
  */
 
+import 'package:antlr4/src/atn/src/atn_simulator.dart';
 import 'package:collection/collection.dart';
 
 import '../../recognizer.dart';
@@ -17,10 +18,6 @@ import '../../util/murmur_hash.dart';
 ///  <p>I have scoped the [AND], [OR], and [Predicate] subclasses of
 ///  [SemanticContext] within the scope of this outer class.</p>
 abstract class SemanticContext {
-  /// The default [SemanticContext], which is semantically equivalent to
-  /// a predicate of the form {@code {true}?}.
-  static const SemanticContext NONE = Predicate();
-
   const SemanticContext();
 
   /// For context independent predicates, we evaluate them without a local
@@ -34,7 +31,7 @@ abstract class SemanticContext {
   /// capture context dependent predicates in the context in which we begin
   /// prediction, so we passed in the outer context here in case of context
   /// dependent predicate evaluation.</p>
-  bool eval(Recognizer parser, RuleContext parserCallStack);
+  bool eval(Recognizer parser, RuleContext? parserCallStack);
 
   /// Evaluate the precedence predicates for the context and reduce the result.
   ///
@@ -52,14 +49,16 @@ abstract class SemanticContext {
   /// <li>A non-null [SemanticContext]in the new simplified
   /// semantic context after precedence predicates are evaluated.</li>
   /// </ul>
-  SemanticContext evalPrecedence(Recognizer parser,
-      RuleContext parserCallStack) {
+  SemanticContext? evalPrecedence(
+    Recognizer parser,
+    RuleContext? parserCallStack,
+  ) {
     return this;
   }
 
-  static SemanticContext and(SemanticContext a, SemanticContext b) {
-    if (a == null || a == NONE) return b;
-    if (b == null || b == NONE) return a;
+  static SemanticContext? and(SemanticContext? a, SemanticContext? b) {
+    if (a == null || a == EmptySemanticContext.Instance) return b;
+    if (b == null || b == EmptySemanticContext.Instance) return a;
     final result = AND(a, b);
     if (result.opnds.length == 1) {
       return result.opnds[0];
@@ -70,10 +69,10 @@ abstract class SemanticContext {
 
   ///
   ///  @see ParserATNSimulator#getPredsForAmbigAlts
-  static SemanticContext or(SemanticContext a, SemanticContext b) {
+  static SemanticContext? or(SemanticContext? a, SemanticContext? b) {
     if (a == null) return b;
     if (b == null) return a;
-    if (a == NONE || b == NONE) return NONE;
+    if (a == EmptySemanticContext.Instance || b == EmptySemanticContext.Instance) return EmptySemanticContext.Instance;
     final result = OR(a, b);
     if (result.opnds.length == 1) {
       return result.opnds[0];
@@ -89,7 +88,18 @@ abstract class SemanticContext {
 
   static Iterable<SemanticContext> filterNonPrecedencePredicates(
       Iterable<SemanticContext> collection) {
-    return collection.where((e) => !(e is PrecedencePredicate));
+    return collection.where((e) => e is! PrecedencePredicate);
+  }
+}
+
+class EmptySemanticContext extends SemanticContext {
+  /// The default [SemanticContext], which is semantically equivalent to
+  /// a predicate of the form {@code {true}?}.
+  static const SemanticContext Instance = Predicate();
+
+  @override
+  bool eval(Recognizer<ATNSimulator> parser, RuleContext? parserCallStack) {
+    return false;
   }
 }
 
@@ -102,7 +112,7 @@ class Predicate extends SemanticContext {
       [this.ruleIndex = -1, this.predIndex = -1, this.isCtxDependent = false]);
 
   @override
-  bool eval(Recognizer parser, RuleContext parserCallStack) {
+  bool eval(Recognizer parser, RuleContext? parserCallStack) {
     final localctx = isCtxDependent ? parserCallStack : null;
     return parser.sempred(localctx, ruleIndex, predIndex);
   }
@@ -138,15 +148,17 @@ class PrecedencePredicate extends SemanticContext
   PrecedencePredicate([this.precedence = 0]);
 
   @override
-  bool eval(Recognizer parser, RuleContext parserCallStack) {
+  bool eval(Recognizer parser, RuleContext? parserCallStack) {
     return parser.precpred(parserCallStack, precedence);
   }
 
   @override
-  SemanticContext evalPrecedence(Recognizer parser,
-      RuleContext parserCallStack) {
+  SemanticContext? evalPrecedence(
+    Recognizer parser,
+    RuleContext? parserCallStack,
+  ) {
     if (parser.precpred(parserCallStack, precedence)) {
-      return SemanticContext.NONE;
+      return EmptySemanticContext.Instance;
     } else {
       return null;
     }
@@ -165,11 +177,10 @@ class PrecedencePredicate extends SemanticContext
   }
 
   @override
-  bool operator ==(Object obj) {
-    if (!(obj is PrecedencePredicate)) {
+  bool operator ==(Object other) {
+    if (other is! PrecedencePredicate) {
       return false;
     }
-    PrecedencePredicate other = obj;
     return precedence == other.precedence;
   }
 
@@ -198,7 +209,7 @@ abstract class Operator extends SemanticContext {
 /// is false.
 
 class AND extends Operator {
-  List<SemanticContext> opnds;
+  late final List<SemanticContext> opnds;
 
   AND(SemanticContext a, SemanticContext b) {
     var operands = <SemanticContext>{};
@@ -214,13 +225,13 @@ class AND extends Operator {
     }
 
     final precedencePredicates =
-    SemanticContext.filterPrecedencePredicates(operands);
+        SemanticContext.filterPrecedencePredicates(operands);
 
     operands = SemanticContext.filterNonPrecedencePredicates(operands).toSet();
     if (precedencePredicates.isNotEmpty) {
       // interested in the transition with the lowest precedence
       final reduced =
-      precedencePredicates.reduce((a, b) => a.compareTo(b) <= 0 ? a : b);
+          precedencePredicates.reduce((a, b) => a.compareTo(b) <= 0 ? a : b);
       operands.add(reduced);
     }
 
@@ -233,9 +244,8 @@ class AND extends Operator {
   }
 
   @override
-  bool operator ==(Object obj) {
-    if (!(obj is AND)) return false;
-    AND other = obj;
+  bool operator ==(Object other) {
+    if (other is! AND) return false;
     return ListEquality().equals(opnds, other.opnds);
   }
 
@@ -251,7 +261,7 @@ class AND extends Operator {
   /// unordered.</p>
 
   @override
-  bool eval(Recognizer parser, RuleContext parserCallStack) {
+  bool eval(Recognizer parser, RuleContext? parserCallStack) {
     for (var opnd in opnds) {
       if (!opnd.eval(parser, parserCallStack)) return false;
     }
@@ -259,18 +269,19 @@ class AND extends Operator {
   }
 
   @override
-  SemanticContext evalPrecedence(Recognizer parser,
-      RuleContext parserCallStack) {
+  SemanticContext? evalPrecedence(
+    Recognizer parser,
+    RuleContext? parserCallStack,
+  ) {
     var differs = false;
     final operands = <SemanticContext>[];
     for (var context in opnds) {
-      final evaluated =
-      context.evalPrecedence(parser, parserCallStack);
+      final evaluated = context.evalPrecedence(parser, parserCallStack);
       differs |= (evaluated != context);
       if (evaluated == null) {
         // The AND context is false if any element is false
         return null;
-      } else if (evaluated != SemanticContext.NONE) {
+      } else if (evaluated != EmptySemanticContext.Instance) {
         // Reduce the result by skipping true elements
         operands.add(evaluated);
       }
@@ -282,10 +293,10 @@ class AND extends Operator {
 
     if (operands.isEmpty) {
       // all elements were true, so the AND context is true
-      return SemanticContext.NONE;
+      return EmptySemanticContext.Instance;
     }
 
-    var result = operands[0];
+    SemanticContext? result = operands[0];
     for (var i = 1; i < operands.length; i++) {
       result = SemanticContext.and(result, operands[i]);
     }
@@ -302,7 +313,7 @@ class AND extends Operator {
 /// A semantic context which is true whenever at least one of the contained
 /// contexts is true.
 class OR extends Operator {
-  List<SemanticContext> opnds;
+  late final List<SemanticContext> opnds;
 
   OR(SemanticContext a, SemanticContext b) {
     var operands = <SemanticContext>{};
@@ -318,13 +329,13 @@ class OR extends Operator {
     }
 
     final precedencePredicates =
-    SemanticContext.filterPrecedencePredicates(operands);
+        SemanticContext.filterPrecedencePredicates(operands);
 
     operands = SemanticContext.filterNonPrecedencePredicates(operands).toSet();
     if (precedencePredicates.isNotEmpty) {
       // interested in the transition with the highest precedence
       final reduced =
-      precedencePredicates.reduce((a, b) => a.compareTo(b) >= 0 ? a : b);
+          precedencePredicates.reduce((a, b) => a.compareTo(b) >= 0 ? a : b);
       operands.add(reduced);
     }
 
@@ -337,9 +348,8 @@ class OR extends Operator {
   }
 
   @override
-  bool operator ==(Object obj) {
-    if (!(obj is OR)) return false;
-    OR other = obj;
+  bool operator ==(Object other) {
+    if (other is! OR) return false;
     return ListEquality().equals(opnds, other.opnds);
   }
 
@@ -355,7 +365,7 @@ class OR extends Operator {
   /// unordered.</p>
 
   @override
-  bool eval(Recognizer parser, RuleContext parserCallStack) {
+  bool eval(Recognizer parser, RuleContext? parserCallStack) {
     for (var opnd in opnds) {
       if (opnd.eval(parser, parserCallStack)) return true;
     }
@@ -363,17 +373,18 @@ class OR extends Operator {
   }
 
   @override
-  SemanticContext evalPrecedence(Recognizer parser,
-      RuleContext parserCallStack) {
+  SemanticContext? evalPrecedence(
+    Recognizer parser,
+    RuleContext? parserCallStack,
+  ) {
     var differs = false;
     final operands = <SemanticContext>[];
     for (var context in opnds) {
-      final evaluated =
-      context.evalPrecedence(parser, parserCallStack);
+      final evaluated = context.evalPrecedence(parser, parserCallStack);
       differs |= (evaluated != context);
-      if (evaluated == SemanticContext.NONE) {
+      if (evaluated == EmptySemanticContext.Instance) {
         // The OR context is true if any element is true
-        return SemanticContext.NONE;
+        return EmptySemanticContext.Instance;
       } else if (evaluated != null) {
         // Reduce the result by skipping false elements
         operands.add(evaluated);
@@ -389,7 +400,7 @@ class OR extends Operator {
       return null;
     }
 
-    var result = operands[0];
+    SemanticContext? result = operands[0];
     for (var i = 1; i < operands.length; i++) {
       result = SemanticContext.or(result, operands[i]);
     }
